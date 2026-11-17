@@ -1,0 +1,46 @@
+{
+  "name": "pi-codex-visibility-filter",
+  "version": "0.1.0",
+  "description": "Filter Pi model availability using the Codex CLI visibility catalog, without blocking direct model lookup.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/80ROkWOC4j/pi-codex-visibility-filter.git"
+  },
+  "homepage": "https://github.com/80ROkWOC4j/pi-codex-visibility-filter#readme",
+  "bugs": {
+    "url": "https://github.com/80ROkWOC4j/pi-codex-visibility-filter/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "codex",
+    "models"
+  ],
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "check": "tsc --noEmit",
+    "test:integration": "node --experimental-strip-types --test test/integration.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}
