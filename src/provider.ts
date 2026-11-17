@@ -1,13 +1,16 @@
 import type { Provider } from "@earendil-works/pi-ai";
-import { CatalogReader, filterVisible } from "./catalog.ts";
+import { CatalogClient } from "./catalog.ts";
 
-/** Decorate availability only. getModels/getModel, authentication and transport stay native. */
-export function withVisibility(base: Provider, reader: CatalogReader): Provider {
+/** Availability only: definitions, direct lookup, authentication and model transport stay native. */
+export function withVisibility(base: Provider, catalog: CatalogClient): Provider {
   return {
     ...base,
+    async refreshModels(context) {
+      await base.refreshModels?.(context);
+      await catalog.refresh(context);
+    },
     filterModels(models, credential) {
-      const native = base.filterModels?.(models, credential) ?? models;
-      return filterVisible(native, reader.read(), reader.options.mode);
+      return catalog.filter(base.filterModels?.(models, credential) ?? models, credential);
     },
     filterAllModels(models, credential) {
       let native = models;
@@ -16,7 +19,7 @@ export function withVisibility(base: Provider, reader: CatalogReader): Provider 
         const ids = new Set(base.filterModels(base.getModels(), credential).map(m => m.id));
         native = models.filter(m => (m.type !== undefined && m.type !== "chat") || ids.has(m.id));
       }
-      return filterVisible(native, reader.read(), reader.options.mode);
+      return catalog.filter(native, credential);
     },
   };
 }

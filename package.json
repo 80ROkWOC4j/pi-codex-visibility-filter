@@ -1,7 +1,7 @@
 {
   "name": "pi-codex-visibility-filter",
-  "version": "0.1.0",
-  "description": "Filter Pi model availability using the Codex CLI visibility catalog, without blocking direct model lookup.",
+  "version": "0.2.0",
+  "description": "Filter Pi model availability using Codex visibility metadata fetched with Pi's native OAuth.",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -20,6 +20,7 @@
   "files": [
     "src",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "pi": {
@@ -40,6 +41,8 @@
     "@earendil-works/pi-coding-agent": "*"
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "1.5.2",
+    "@earendil-works/pi-coding-agent": "1.5.2",
     "@types/node": "^24.0.0",
     "typescript": "^5.9.0"
   }
