@@ -20,13 +20,18 @@ export function parseRows(value: unknown): Row[] {
   return rows;
 }
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+type ChatGPTCredential = Extract<Credential, { type: "oauth" }> & { clientId: string };
+
+/** Pi's native ChatGPT login stores the grant's client ID and direct-token scope. */
+export function isChatGPTCredential(credential: Credential | undefined): credential is ChatGPTCredential {
+  return credential?.type === "oauth" && typeof credential.access === "string" && !!credential.access &&
+    typeof credential.clientId === "string" && !!credential.clientId.trim() &&
+    Array.isArray(credential.scopes) && credential.scopes.includes("chatgpt.tokens.use.direct");
+}
+
 /** Identify the OAuth grant so another login cannot reuse its catalog. */
 function identity(credential: Credential | undefined) {
-  if (credential?.type !== "oauth" || !credential.access) return undefined;
-  // Pi issues a new clientId for each ChatGPT grant; it survives token rotation.
-  return typeof credential.clientId === "string" && credential.clientId
-    ? hash("grant:" + credential.clientId)
-    : hash("token:" + credential.access);
+  if (isChatGPTCredential(credential)) return hash(credential.clientId);
 }
 
 interface State {
@@ -38,7 +43,7 @@ interface State {
 }
 export interface ProcessCache { state?: State }
 // Extension modules are reloaded by jiti. A process-global symbol retains the single attempt across /reload and /new.
-const CACHE = Symbol.for("pi-codex-visibility-filter.process-cache.v2");
+const CACHE = Symbol.for("pi-codex-visibility-filter.process-cache.v3");
 export function processCache(): ProcessCache {
   const globals = globalThis as typeof globalThis & { [CACHE]?: ProcessCache };
   return globals[CACHE] ??= {};
@@ -82,13 +87,14 @@ export class CatalogClient {
   }
   async refresh(context: RefreshModelsContext): Promise<void> {
     if (!context.allowNetwork || context.signal.aborted) return;
-    const owner = identity(context.credential);
-    if (!owner || context.credential?.type !== "oauth") return;
+    const { credential } = context;
+    if (!isChatGPTCredential(credential)) return;
+    const owner = hash(credential.clientId);
     let state = this.cache.state;
     if (!state) {
       state = { identity: owner, pending: Promise.resolve() };
       this.cache.state = state;
-      state.pending = this.fetchOnce(state, context.credential.access);
+      state.pending = this.fetchOnce(state, credential.access);
     }
     // An account change requires a process restart; never apply the previous account's catalog.
     if (state.identity === owner) await wait(state.pending, context.signal);

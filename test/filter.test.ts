@@ -1,13 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Credential, Provider, RefreshModelsContext } from "@earendil-works/pi-ai";
-import { createModels } from "@earendil-works/pi-ai/models";
 import { CatalogClient, CATALOG_URL, parseRows, processCache, type ProcessCache } from "../src/catalog.ts";
 import { withVisibility } from "../src/provider.ts";
 
 function credential(clientId = "test-grant"): Extract<Credential, { type: "oauth" }> {
-  return { type: "oauth", clientId, accountId: "test-account", access: "opaque-test-access", refresh: "secret-refresh", expires: Date.now() + 86400000 };
+  return { type: "oauth", clientId, scopes: ["chatgpt.tokens.use.direct"], access: "opaque-test-access", refresh: "secret-refresh", expires: Date.now() + 86400000 };
 }
+const readCredential = async () => credential();
 const remote = { models: [{ slug: "new", visibility: "list", supported_in_api: false, extra: "ignored" }, { slug: "old", visibility: "hide" }, { slug: "none", visibility: "none" }] };
 const models = [{ id: "new" }, { id: "old" }, { id: "absent" }, { id: "none" }, { id: "image", type: "image" }];
 const ids = (items: readonly { id: string }[]) => items.map(m => m.id);
@@ -64,16 +64,20 @@ test("changed account fails open without fetching again", async () => {
   assert.equal(calls, 1);
 });
 
-test("offline and API-key credentials never make a catalog request or consume the attempt", async () => {
+test("offline, API-key, and other OAuth credentials never consume the attempt", async () => {
   let calls = 0;
   const catalog = client(async () => { calls++; return Response.json(remote); });
   await catalog.refresh(context({ allowNetwork: false }));
   await catalog.refresh(context({ credential: { type: "api_key", key: "dummy" } }));
   await catalog.refresh(context({ credential: undefined }));
+  const otherOAuth = { ...credential(), scopes: ["resource.invoke"] };
+  await catalog.refresh(context({ credential: otherOAuth }));
+  await catalog.refresh(context({ credential: { ...credential(), clientId: "" } }));
   assert.equal(calls, 0);
   assert.equal(catalog.status().attempted, false);
   await catalog.refresh(context());
   assert.equal(calls, 1);
+  assert.equal(catalog.filter(models, otherOAuth), models);
 });
 
 test("failed, invalid and oversized requests fail open and are not retried in this process", async () => {
@@ -111,34 +115,48 @@ test("provider composition keeps native auth, lookup, transport and filters", as
   const base = { id: "openai", name: "OpenAI", auth: {}, getModels: () => models,
     stream: () => {}, streamSimple: () => {}, filterModels: (items: typeof models) => items.filter(m => m.id !== "absent"),
   } as unknown as Provider;
-  const wrapped = withVisibility(base, catalog);
+  const wrapped = withVisibility(base, catalog, readCredential);
   for (const key of ["auth", "getModels", "stream", "streamSimple"] as const) assert.equal(wrapped[key], base[key]);
   assert.ok(wrapped.getModels().some(m => m.id === "old"));
   assert.deepEqual(ids(wrapped.filterAllModels!(base.getModels(), credential())), ["new", "image"]);
   base.filterAllModels = items => items.filter(m => m.id !== "new");
-  assert.deepEqual(ids(withVisibility(base, catalog).filterAllModels!(base.getModels(), credential())), ["image"]);
+  assert.deepEqual(ids(withVisibility(base, catalog, readCredential).filterAllModels!(base.getModels(), credential())), ["image"]);
 });
 
-test("Pi refreshes expired OAuth before the first catalog request", async () => {
-  let stored: Credential | undefined = { ...credential(), expires: 0 };
+test("provider wrapper preserves models and metadata added by native refresh", async () => {
+  const catalog = client();
+  let current = [{ id: "old", contextWindow: 100 }];
   let refreshes = 0;
-  const catalog = client(async (_url, init) => {
-    assert.equal(new Headers(init?.headers).get("Authorization"), "Bearer refreshed-access");
-    return Response.json(remote);
-  });
-  const runtime = createModels({ credentials: {
-    read: async () => stored, list: async () => [{ providerId: "openai", type: "oauth" }],
-    modify: async (_id, fn) => { stored = await fn(stored) ?? stored; return stored; }, delete: async () => { stored = undefined; },
-  } });
-  const base = { id: "openai", name: "OpenAI", getModels: () => models,
-    auth: { oauth: { name: "Test", login: async () => credential(), refresh: async () => {
-      refreshes++; return { ...credential(), access: "refreshed-access" };
-    }, toAuth: async (value: { access: string }) => ({ apiKey: value.access }) } },
-    stream: () => {}, streamSimple: () => {},
+  const base = {
+    id: "openai", name: "OpenAI", getModels: () => current,
+    async refreshModels(ctx: RefreshModelsContext) {
+      refreshes++;
+      await ctx.publish({ update: () => { current = [...current, { id: "new", contextWindow: 200 }]; } });
+    },
   } as unknown as Provider;
-  runtime.setProvider(withVisibility(base, catalog));
-  assert.equal((await runtime.refresh()).errors.size, 0);
+  const wrapped = withVisibility(base, catalog, readCredential);
+  await wrapped.refreshModels!(context());
   assert.equal(refreshes, 1);
-  assert.deepEqual(ids(await runtime.getAvailable()), ["new", "image"]);
-  assert.ok(runtime.getModel("openai", "old"));
+  assert.deepEqual(ids(wrapped.getModels()), ["old", "new"]);
+  assert.deepEqual(wrapped.filterAllModels!(wrapped.getModels(), credential()), [{ id: "new", contextWindow: 200 }]);
+});
+
+test("native refresh failure still awaits visibility before returning the error", async () => {
+  let complete: (response: Response) => void = () => {};
+  const catalog = client(() => new Promise(resolve => { complete = resolve; }));
+  const failure = new Error("native catalog unavailable");
+  const base = { refreshModelsAuth: "configured", refreshModels: () => { throw failure; } } as unknown as Provider;
+  const wrapped = withVisibility(base, catalog, readCredential);
+  assert.equal(wrapped.refreshModelsAuth, "configured");
+  let settled = false;
+  const refresh = wrapped.refreshModels!(context());
+  const rejected = assert.rejects(refresh, error => {
+    settled = true;
+    return error === failure;
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false);
+  complete(Response.json(remote));
+  await rejected;
+  assert.deepEqual(ids(catalog.filter(models, credential())), ["new", "image"]);
 });

@@ -1,15 +1,25 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { CatalogClient } from "./catalog.ts";
-import { withVisibility } from "./provider.ts";
+import { attachVisibility } from "./pi-runtime.ts";
 
 export default function codexVisibility(pi: ExtensionAPI) {
-  const base = builtinProviders().find(provider => provider.id === "openai");
-  if (!base) return;
   const catalog = new CatalogClient();
-  pi.registerProvider(withVisibility(base, catalog));
+  let detach: (() => boolean) | undefined;
+
+  pi.on("session_shutdown", async (event, ctx) => {
+    const detached = detach?.();
+    detach = undefined;
+    if (detached && event.reason !== "quit") {
+      await ctx.modelRegistry.refresh({ providers: ["openai"], allowNetwork: false, signal: AbortSignal.timeout(7000) });
+    }
+  });
 
   pi.on("session_start", async (_event, ctx) => {
+    detach ??= attachVisibility(ctx.modelRegistry, catalog);
+    if (!detach) {
+      ctx.ui.notify("Visibility filter is unavailable in this Pi version.", "warning");
+      return;
+    }
     // Await startup discovery before Paseo's first RPC list. Honor the host's offline policy.
     const result = await ctx.modelRegistry.refresh({ providers: ["openai"], signal: AbortSignal.timeout(7000) });
     if (result.aborted || result.errors.size) {
